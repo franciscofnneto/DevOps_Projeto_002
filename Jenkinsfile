@@ -1,106 +1,134 @@
-node {
+pipeline {
+  agent none
 
-    //All code must be in try block to be caught by the notification sender.
-    try{
+  environment {
+    MAJOR_VERSION = 1
+  }
 
-    // Mark the code checkout 'stage'....
-    stage 'Checkout'
+  stages {
+    stage('Say Hello') {
+      agent any
 
-        // Checkout code from repository
-        deleteDir()
-        checkout scm
-
-    // Get the maven tool.
-    // ** NOTE: This 'M3' maven tool must be configured
-    // **       in the global configuration.
-    def mvnHome = tool 'M3'
-
-    // Mark the code build 'stage'....
-    stage 'Build'
-
-        // Run the maven build to check compilation, currently not running of tests.
-        // Remove -DskipTests and pass an environment identifier to run the tests against an environment
-        // E.g. mvn clean test -Denv.HOME=dev
-        sh "${mvnHome}/bin/mvn clean install -DskipTests"
-
-    // Mark the code build 'stage'....
-    stage 'Run Tests'
-
-        if(SUITE != null){
-            if (SUITE != 'all'){
-                sh "${mvnHome}/bin/mvn clean install -Dmaven.test.failure.ignore=false -Denv.HOME=${ENVIRONMENT} -Dhub=hubtest -Dcucumber.options='-t @${SUITE}'"
-            }else{
-                sh "${mvnHome}/bin/mvn clean install -Dmaven.test.failure.ignore=false -Denv.HOME=${ENVIRONMENT} -Dhub=hubtest"
-            }
-        }
-
-
-
-    //stage 'Code-Analysis'
-        //def scannerHome = tool 'SonarQubeScanner';
-        //withSonarQubeEnv('sonarqube') {
-        //    sh "${scannerHome}/bin/sonar-scanner"
-        //}
-
-    stage 'Cucumber Reporting'
-        step([$class: 'CucumberReportPublisher',
-          fileExcludePattern: '',
-          fileIncludePattern: '',
-          ignoreFailedTests: false,
-          jenkinsBasePath: '',
-          jsonReportDirectory: '',
-          missingFails: false,
-          parallelTesting: false,
-          pendingFails: false,
-          skippedFails: false,
-          undefinedFails: false])
-
-     } catch (e) {
-              // If there was an exception thrown, the build failed
-              currentBuild.result = "FAILED"
-              throw e
-            } finally {
-              // Success or failure, always send notifications
-              notifyBuild(currentBuild.result)
-            }
-    }
-
-    def notifyBuild(String buildStatus = 'STARTED') {
-      // build status of null means successful
-      buildStatus =  buildStatus ?: 'SUCCESSFUL'
-
-      GIT_NAME = sh (
-                script: 'git --no-pager show -s --format=\'%an\'',
-                returnStdout: true
-                ).trim()
-
-      GIT_EMAIL = sh (
-                  script: 'git --no-pager show -s --format=\'%ae\'',
-                  returnStdout: true
-                  ).trim()
-
-      def SLACK_USER_NAME_AND_EMAIL = GIT_EMAIL.split( '@' )
-      SLACK_USER_NAME = SLACK_USER_NAME_AND_EMAIL[0]
-
-      // Default values
-      def colorName = 'RED'
-      def colorCode = '#FF0000'
-      def subject = "${buildStatus}: '${env.JOB_NAME} [${env.BUILD_NUMBER}]'"
-      def summary = "${subject} (${env.BUILD_URL})"
-
-      // Override default values based on build status
-      if (buildStatus == 'STARTED') {
-        color = 'YELLOW'
-        colorCode = '#FFFF00'
-      } else if (buildStatus == 'SUCCESSFUL') {
-        color = 'GREEN'
-        colorCode = '#008000'
-      } else {
-        color = 'RED'
-        colorCode = '#FF0000'
-        summary = "${subject} (${env.BUILD_URL}) : *@here Acceptance Tests Failure*"
+      steps {
+        sayHello 'Awesome Student!'
       }
+    }
+    stage('Git Information') {
+      agent any
 
-      // Send notifications
-      slackSend (color: colorCode, message: summary)
+      steps {
+        echo "My Branch Name: ${env.BRANCH_NAME}"
+
+        script {
+          def myLib = new linuxacademy.git.gitStuff();
+
+          echo "My Commit: ${myLib.gitCommit("${env.WORKSPACE}/.git")}"
+        }
+      }
+    }
+    stage('Unit Tests') {
+      agent {
+        label 'apache'
+      }
+      steps {
+        sh 'ant -f test.xml -v'
+        junit 'reports/result.xml'
+      }
+    }
+    stage('build') {
+      agent {
+        label 'apache'
+      }
+      steps {
+        sh 'ant -f build.xml -v'
+      }
+      post {
+        success {
+          archiveArtifacts artifacts: 'dist/*.jar', fingerprint: true
+        }
+      }
+    }
+    stage('deploy') {
+      agent {
+        label 'apache'
+      }
+      steps {
+        sh "if ![ -d '/var/www/html/rectangles/all/${env.BRANCH_NAME}' ]; then mkdir /var/www/html/rectangles/all/${env.BRANCH_NAME}; fi"
+        sh "cp dist/rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar /var/www/html/rectangles/all/${env.BRANCH_NAME}/"
+      }
+    }
+    stage("Running on CentOS") {
+      agent {
+        label 'CentOS'
+      }
+      steps {
+        sh "wget http://brandon4231.mylabserver.com/rectangles/all/${env.BRANCH_NAME}/rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar"
+        sh "java -jar rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar 3 4"
+      }
+    }
+    stage("Test on Debian") {
+      agent {
+        docker 'openjdk:8u121-jre'
+      }
+      steps {
+        sh "wget http://brandon4231.mylabserver.com/rectangles/all/${env.BRANCH_NAME}/rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar"
+        sh "java -jar rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar 3 4"
+      }
+    }
+    stage('Promote to Green') {
+      agent {
+        label 'apache'
+      }
+      when {
+        branch 'master'
+      }
+      steps {
+        sh "cp /var/www/html/rectangles/all/${env.BRANCH_NAME}/rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar /var/www/html/rectangles/green/rectangle_${env.MAJOR_VERSION}.${env.BUILD_NUMBER}.jar"
+      }
+    }
+    stage('Promote Development Branch to Master') {
+      agent {
+        label 'apache'
+      }
+      when {
+        branch 'development'
+      }
+      steps {
+        echo "Stashing Any Local Changes"
+        sh 'git stash'
+        echo "Checking Out Development Branch"
+        sh 'git checkout development'
+        echo 'Checking Out Master Branch'
+        sh 'git pull origin'
+        sh 'git checkout master'
+        echo 'Merging Development into Master Branch'
+        sh 'git merge development'
+        echo 'Pushing to Origin Master'
+        sh 'git push origin master'
+        echo 'Tagging the Release'
+        sh "git tag rectangle-${env.MAJOR_VERSION}.${env.BUILD_NUMBER}"
+        sh "git push origin rectangle-${env.MAJOR_VERSION}.${env.BUILD_NUMBER}"
+      }
+      post {
+        success {
+          emailext(
+            subject: "${env.JOB_NAME} [${env.BUILD_NUMBER}] Development Promoted to Master",
+            body: """<p>'${env.JOB_NAME} [${env.BUILD_NUMBER}]' Development Promoted to Master":</p>
+            <p>Check console output at &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} [${env.BUILD_NUMBER}]</a>&QUOT;</p>""",
+            to: "brandon@linuxacademy.com"
+          )
+        }
+      }
+    }
+  }
+  post {
+    failure {
+      emailext(
+        subject: "${env.JOB_NAME} [${env.BUILD_NUMBER}] Failed!",
+        body: """<p>'${env.JOB_NAME} [${env.BUILD_NUMBER}]' Failed!":</p>
+        <p>Check console output at &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} [${env.BUILD_NUMBER}]</a>&QUOT;</p>""",
+        to: "brandon@linuxacademy.com"
+      )
+    }
+  }
 }
